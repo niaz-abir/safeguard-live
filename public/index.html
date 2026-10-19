@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>SAFEGUARD LIVE — Real-Time Emergency Tracking</title>
-  <meta name="description" content="Real-time emergency and women safety live tracking system with SOS alerts and admin monitoring." />
+  <meta name="description" content="Real-time emergency and women safety live tracking system with live user movement path tracking, start-to-current route visualization, and distance/speed metrics." />
 
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -49,18 +49,35 @@
     }
     .safe-pulse { animation: safePulse 1.5s infinite; }
 
+    /* Start Marker Pulse */
+    @keyframes startMarkerPulse {
+      0%   { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70%  { box-shadow: 0 0 0 14px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .start-marker-pulse { animation: startMarkerPulse 2s infinite; }
+
+    /* Polyline Live Trail Dash Animation */
+    .live-trail-polyline {
+      stroke-dasharray: 8, 8;
+      animation: dashAnimation 20s linear infinite;
+    }
+    @keyframes dashAnimation {
+      to { stroke-dashoffset: -1000; }
+    }
+
     /* Map container */
     #admin-map { height: 100%; width: 100%; min-height: 400px; border-radius: 0.75rem; z-index: 1; }
 
     /* Leaflet popup overrides */
     .leaflet-popup-content-wrapper {
-      background: #1e293b !important;
+      background: #0f172a !important;
       color: #f1f5f9 !important;
       border-radius: 0.75rem !important;
       border: 1px solid rgba(239, 68, 68, 0.4) !important;
-      box-shadow: 0 0 20px rgba(239, 68, 68, 0.15) !important;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.7), 0 0 15px rgba(239, 68, 68, 0.2) !important;
     }
-    .leaflet-popup-tip { background: #1e293b !important; }
+    .leaflet-popup-tip { background: #0f172a !important; }
     .leaflet-popup-content { margin: 12px 16px !important; font-family: 'Inter', sans-serif !important; }
 
     /* Custom scrollbar */
@@ -101,10 +118,18 @@
 
     /* Glassmorphism card */
     .glass {
-      background: rgba(15, 23, 42, 0.6);
+      background: rgba(15, 23, 42, 0.75);
       backdrop-filter: blur(16px);
       -webkit-backdrop-filter: blur(16px);
-      border: 1px solid rgba(148, 163, 184, 0.1);
+      border: 1px solid rgba(148, 163, 184, 0.12);
+    }
+
+    /* Follow active state */
+    .following-active {
+      background: rgba(16, 185, 129, 0.2) !important;
+      border-color: rgba(16, 185, 129, 0.6) !important;
+      color: #34d399 !important;
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.25) !important;
     }
   </style>
 </head>
@@ -125,7 +150,7 @@
           <h1 class="text-lg font-extrabold tracking-tight bg-gradient-to-r from-red-400 via-rose-400 to-orange-400 bg-clip-text text-transparent">
             SAFEGUARD LIVE
           </h1>
-          <p class="text-[10px] text-slate-500 font-medium tracking-widest uppercase">Emergency Tracking System</p>
+          <p class="text-[10px] text-slate-500 font-medium tracking-widest uppercase">Live Emergency & Movement Tracking</p>
         </div>
       </div>
 
@@ -149,8 +174,8 @@
   <main class="flex-1 overflow-hidden">
 
     <!-- ─────────────────────── USER VIEW ─────────────────────── -->
-    <section id="user-view" class="h-full flex items-center justify-center px-4 py-8">
-      <div class="w-full max-w-md space-y-6 slide-in">
+    <section id="user-view" class="h-full flex items-center justify-center px-4 py-6 overflow-y-auto">
+      <div class="w-full max-w-md space-y-5 slide-in my-auto">
 
         <!-- Status Banner -->
         <div id="status-banner"
@@ -187,17 +212,28 @@
           </div>
         </div>
 
-        <!-- SOS Button -->
-        <div class="flex flex-col items-center gap-4 pt-2">
+        <!-- SOS Button & Simulator Container -->
+        <div class="flex flex-col items-center gap-3 pt-1">
           <button id="sos-btn" onclick="toggleSOS()"
-            class="w-48 h-48 rounded-full bg-gradient-to-br from-red-500 to-red-700 text-white font-extrabold text-lg shadow-2xl shadow-red-500/30 sos-pulse transition-all duration-500 hover:scale-105 active:scale-95 flex flex-col items-center justify-center gap-1 select-none">
+            class="w-44 h-44 rounded-full bg-gradient-to-br from-red-500 to-red-700 text-white font-extrabold text-lg shadow-2xl shadow-red-500/30 sos-pulse transition-all duration-500 hover:scale-105 active:scale-95 flex flex-col items-center justify-center gap-1 select-none">
             <svg class="w-10 h-10 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
             </svg>
             <span id="sos-btn-text">SOS</span>
             <span class="text-xs font-medium opacity-80" id="sos-btn-sub">Tap for Help</span>
           </button>
-          <p id="coords-display" class="text-xs text-slate-600 font-mono h-4"></p>
+          
+          <p id="coords-display" class="text-xs text-slate-400 font-mono h-4 text-center"></p>
+
+          <!-- 🚶 Movement Simulator Button (Test / Demo Mode) -->
+          <div id="sim-container" class="w-full pt-1 flex flex-col items-center">
+            <button id="sim-btn" onclick="toggleSimulation()"
+              class="px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 bg-slate-900/90 text-slate-300 hover:text-white border border-slate-700 hover:border-slate-500 flex items-center gap-2 shadow-lg hover:shadow-slate-700/20 active:scale-95">
+              <span id="sim-icon">🚶</span>
+              <span id="sim-text">Simulate Movement (Test)</span>
+            </button>
+            <p id="sim-feedback" class="text-[11px] text-amber-400 font-medium mt-1.5 h-4 text-center"></p>
+          </div>
         </div>
 
       </div>
@@ -208,7 +244,7 @@
       <div class="flex h-full">
 
         <!-- Left Sidebar -->
-        <aside class="w-full sm:w-96 shrink-0 border-r border-slate-800/60 flex flex-col bg-slate-950/80">
+        <aside class="w-full sm:w-[410px] shrink-0 border-r border-slate-800/60 flex flex-col bg-slate-950/80">
           <!-- Sidebar Header -->
           <div class="px-5 py-4 border-b border-slate-800/60 flex items-center justify-between">
             <div class="flex items-center gap-2">
@@ -220,7 +256,7 @@
             </div>
             <div class="flex items-center gap-1.5">
               <span class="w-2 h-2 rounded-full bg-emerald-400 blink"></span>
-              <span class="text-[10px] text-emerald-400 font-medium uppercase tracking-wider">Live</span>
+              <span class="text-[10px] text-emerald-400 font-medium uppercase tracking-wider">Live Path Tracking</span>
             </div>
           </div>
 
@@ -239,10 +275,29 @@
         <!-- Map Area -->
         <div class="flex-1 relative hidden sm:block">
           <div id="admin-map" class="absolute inset-0"></div>
-          <!-- Map Overlay Badge -->
-          <div class="absolute top-4 right-4 z-[1000] glass rounded-xl px-4 py-2 flex items-center gap-2">
-            <span class="w-2 h-2 rounded-full bg-red-500 blink"></span>
-            <span class="text-xs font-semibold text-slate-300">Live Tracking</span>
+          
+          <!-- Map Overlay Controls & Legend -->
+          <div class="absolute top-4 right-4 z-[1000] flex flex-col gap-2">
+            <div class="glass rounded-xl px-4 py-2 flex items-center gap-2 shadow-lg">
+              <span class="w-2 h-2 rounded-full bg-red-500 blink"></span>
+              <span class="text-xs font-semibold text-slate-200">Live Breadcrumb Tracking</span>
+            </div>
+
+            <!-- Legend Badge -->
+            <div class="glass rounded-xl p-2.5 text-[11px] text-slate-300 space-y-1 shadow-lg border border-slate-700/60 hidden md:block">
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 border border-white"></span>
+                <span>🟢 SOS Start Point</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="w-3 h-0.5 bg-red-500 inline-block"></span>
+                <span>🔴 Movement Trail</span>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
+                <span>🚨 Current Live Position</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -290,8 +345,20 @@
     let watchId = null;
     let map = null;
     let mapReady = false;
-    let markers = {};            // socketId -> L.marker
-    let knownAlertIds = new Set(); // for detecting new alerts
+    let userLayers = {};         // socketId -> { startMarker, polyline, currentMarker }
+    let followedUserId = null;   // socketId of user locked for auto-pan
+    let knownAlertIds = new Set();
+    let lastData = null;
+
+    // Simulator State
+    let isSimulating = false;
+    let simInterval = null;
+    let simLat = 23.8103;
+    let simLng = 90.4125;
+    let simAngle = Math.PI / 4;
+    let simSteps = 0;
+    let lastKnownLat = null;
+    let lastKnownLng = null;
 
     // ──────────────── Audio (Web Audio API beep) ────────────────
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -386,7 +453,7 @@
       map = L.map('admin-map', {
         zoomControl: true,
         attributionControl: true
-      }).setView([23.8103, 90.4125], 12);
+      }).setView([23.8103, 90.4125], 13);
 
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors',
@@ -396,27 +463,45 @@
       mapReady = true;
 
       // Re-render any alerts that arrived before map was ready
-      if (Object.keys(markers).length === 0 && lastData) {
+      if (lastData) {
         renderAdmin(lastData);
       }
     }
 
+    // 1. Start Point Marker Icon (🟢)
+    function createStartIcon() {
+      return L.divIcon({
+        className: '',
+        html: `
+          <div style="position:relative;width:34px;height:34px;">
+            <div style="position:absolute;inset:0;background:#10b981;border-radius:50%;opacity:0.35;animation:startMarkerPulse 2s infinite;"></div>
+            <div style="position:absolute;inset:3px;background:linear-gradient(135deg, #10b981, #047857);border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 10px rgba(16,185,129,0.8);display:flex;align-items:center;justify-content:center;color:#ffffff;font-size:12px;font-weight:900;">
+              🏁
+            </div>
+          </div>`,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
+        popupAnchor: [0, -20]
+      });
+    }
+
+    // 3. Current Live Position Marker Icon (🚨)
     function createMarkerIcon(gender) {
       const color = gender === 'Female' ? '#f43f5e' : gender === 'Male' ? '#3b82f6' : '#a855f7';
       return L.divIcon({
         className: '',
         html: `
-          <div style="position:relative;width:36px;height:36px;">
-            <div style="position:absolute;inset:0;background:${color};border-radius:50%;opacity:0.25;animation:sosPulse 1.5s infinite;"></div>
-            <div style="position:absolute;inset:4px;background:${color};border-radius:50%;border:3px solid #0f172a;box-shadow:0 0 12px ${color}80;display:flex;align-items:center;justify-content:center;">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="white" stroke="white" stroke-width="1">
+          <div style="position:relative;width:40px;height:40px;">
+            <div style="position:absolute;inset:0;background:${color};border-radius:50%;opacity:0.35;animation:sosPulse 1.4s infinite;"></div>
+            <div style="position:absolute;inset:4px;background:radial-gradient(circle, ${color}, #0f172a);border-radius:50%;border:2.5px solid #ffffff;box-shadow:0 0 14px ${color};display:flex;align-items:center;justify-content:center;">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="white">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
               </svg>
             </div>
           </div>`,
-        iconSize: [36, 36],
-        iconAnchor: [18, 18],
-        popupAnchor: [0, -20]
+        iconSize: [40, 40],
+        iconAnchor: [20, 20],
+        popupAnchor: [0, -22]
       });
     }
 
@@ -438,18 +523,27 @@
         return;
       }
 
-      if (!navigator.geolocation) {
-        alert('Geolocation is not supported by your browser.');
-        return;
-      }
-
       isSOS = true;
       updateSOSButton();
       updateStatusBanner('tracking');
 
+      if (!navigator.geolocation) {
+        console.warn('Geolocation not supported, simulation available.');
+        return;
+      }
+
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
-          const { latitude: lat, longitude: lng } = pos.coords;
+          // If simulator is actively driving coordinates, don't overwrite with static location
+          if (isSimulating) return;
+
+          const { latitude: lat, longitude: lng, speed } = pos.coords;
+          lastKnownLat = lat;
+          lastKnownLng = lng;
+          const speedKmh = (speed !== null && speed !== undefined && speed > 0)
+            ? Math.round(speed * 3.6 * 10) / 10
+            : 0;
+
           document.getElementById('coords-display').textContent = `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
 
           socket.emit('sos-location', {
@@ -457,12 +551,15 @@
             gender: document.getElementById('user-gender').value,
             phone: document.getElementById('user-phone').value.trim() || 'N/A',
             lat,
-            lng
+            lng,
+            speed: speedKmh
           });
         },
         (err) => {
           console.error('Geolocation error:', err);
-          updateStatusBanner('error');
+          if (!isSimulating) {
+            updateStatusBanner('error');
+          }
         },
         { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
       );
@@ -470,6 +567,8 @@
 
     function stopSOS() {
       isSOS = false;
+      stopSimulation();
+
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
         watchId = null;
@@ -510,13 +609,13 @@
         dot.className = 'w-3 h-3 rounded-full bg-red-500 blink shrink-0';
         title.textContent = '🔴 LIVE — SOS Active';
         title.className = 'font-semibold text-sm text-red-400';
-        sub.textContent = 'Your location is being shared in real-time.';
+        sub.textContent = 'Your live movement path is being broadcasted to Admin in real time.';
         banner.classList.add('border-red-500/30');
       } else if (state === 'error') {
         dot.className = 'w-3 h-3 rounded-full bg-yellow-500 shrink-0';
-        title.textContent = '⚠️ GPS Error';
+        title.textContent = '⚠️ GPS Warning';
         title.className = 'font-semibold text-sm text-yellow-400';
-        sub.textContent = 'Could not get location. Check GPS permissions.';
+        sub.textContent = 'Could not get GPS fix. You can still use Simulate Movement.';
         banner.classList.add('border-yellow-500/30');
       } else {
         dot.className = 'w-3 h-3 rounded-full bg-slate-500 shrink-0';
@@ -526,9 +625,106 @@
       }
     }
 
-    // ──────────────── Admin Panel Rendering ────────────────
-    let lastData = null;
+    // ──────────────── 🚶 Movement Simulator (Test Feature) ────────────────
+    function toggleSimulation() {
+      // If user hasn't started SOS yet, auto-populate test name and start SOS
+      if (!isSOS) {
+        const nameInput = document.getElementById('user-name');
+        if (!nameInput.value.trim()) {
+          nameInput.value = 'Demo User (' + Math.floor(Math.random() * 899 + 100) + ')';
+        }
+        startSOS();
+      }
 
+      isSimulating = !isSimulating;
+      updateSimButtonUI();
+
+      if (isSimulating) {
+        // Start simulation from last known coords or Dhaka center
+        if (lastKnownLat && lastKnownLng) {
+          simLat = lastKnownLat;
+          simLng = lastKnownLng;
+        } else {
+          simLat = 23.8103;
+          simLng = 90.4125;
+        }
+        simSteps = 0;
+        simAngle = Math.random() * Math.PI * 2;
+
+        const feedback = document.getElementById('sim-feedback');
+        if (feedback) feedback.textContent = '🚶 Simulating live road movement...';
+
+        // Emit initial simulated point immediately
+        emitSimulatedPoint();
+
+        // Continue walking every 2 seconds
+        simInterval = setInterval(() => {
+          emitSimulatedPoint();
+        }, 2000);
+      } else {
+        stopSimulation();
+      }
+    }
+
+    function emitSimulatedPoint() {
+      simSteps++;
+      // Wander with small realistic directional curves
+      simAngle += (Math.random() - 0.5) * 0.3;
+
+      // Move approx 8 to 14 meters (0.00008 - 0.00013 degrees)
+      const stepDist = 0.00008 + Math.random() * 0.00005;
+      simLat += Math.cos(simAngle) * stepDist;
+      simLng += Math.sin(simAngle) * stepDist;
+      lastKnownLat = simLat;
+      lastKnownLng = simLng;
+
+      // Realistic speed (4.2 - 6.8 km/h)
+      const simSpeed = parseFloat((4.5 + Math.random() * 2.0).toFixed(1));
+
+      document.getElementById('coords-display').textContent = `📍 ${simLat.toFixed(6)}, ${simLng.toFixed(6)} | ${simSpeed} km/h`;
+      
+      const feedback = document.getElementById('sim-feedback');
+      if (feedback) feedback.textContent = `🚶 Simulated Step #${simSteps} • Speed: ${simSpeed} km/h`;
+
+      socket.emit('sos-location', {
+        name: document.getElementById('user-name').value.trim() || 'Demo User',
+        gender: document.getElementById('user-gender').value,
+        phone: document.getElementById('user-phone').value.trim() || '01700000000',
+        lat: simLat,
+        lng: simLng,
+        speed: simSpeed
+      });
+    }
+
+    function stopSimulation() {
+      if (simInterval) {
+        clearInterval(simInterval);
+        simInterval = null;
+      }
+      isSimulating = false;
+      updateSimButtonUI();
+      const feedback = document.getElementById('sim-feedback');
+      if (feedback) feedback.textContent = '';
+    }
+
+    function updateSimButtonUI() {
+      const btn = document.getElementById('sim-btn');
+      const icon = document.getElementById('sim-icon');
+      const text = document.getElementById('sim-text');
+      if (!btn) return;
+
+      if (isSimulating) {
+        btn.className = 'px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 bg-amber-500/20 text-amber-300 border border-amber-500/60 shadow-lg shadow-amber-500/20 flex items-center gap-2 active:scale-95 animate-pulse';
+        icon.textContent = '⏹️';
+        text.textContent = 'Stop Movement Simulation';
+      } else {
+        btn.className = 'px-4 py-2.5 rounded-xl text-xs font-bold transition-all duration-300 bg-slate-900/90 text-slate-300 hover:text-white border border-slate-700 hover:border-slate-500 flex items-center gap-2 shadow-lg hover:shadow-slate-700/20 active:scale-95';
+        icon.textContent = '🚶';
+        text.textContent = 'Simulate Movement (Test)';
+      }
+    }
+
+    // ──────────────── Admin Panel Rendering ────────────────
     function renderAdmin(data) {
       lastData = data;
       const entries = Object.entries(data);
@@ -549,6 +745,7 @@
         list.innerHTML = '';
         list.appendChild(noAlerts);
         noAlerts.style.display = 'flex';
+        followedUserId = null;
       } else {
         if (noAlerts.parentElement === list) {
           noAlerts.style.display = 'none';
@@ -569,21 +766,33 @@
         entries.forEach(([id, user]) => {
           const genderIcon = user.gender === 'Female' ? '♀️' : user.gender === 'Male' ? '♂️' : '⚧';
           const genderColor = user.gender === 'Female' ? 'text-rose-400' : user.gender === 'Male' ? 'text-blue-400' : 'text-purple-400';
-          const borderColor = user.gender === 'Female' ? 'border-rose-500/20' : user.gender === 'Male' ? 'border-blue-500/20' : 'border-purple-500/20';
+          const borderColor = user.gender === 'Female' ? 'border-rose-500/30' : user.gender === 'Male' ? 'border-blue-500/30' : 'border-purple-500/30';
           const elapsed = timeAgo(user.timestamp);
+
+          const distFormatted = formatDistance(user.distanceTraveled || 0);
+          const pointsCount = (user.pathHistory && user.pathHistory.length) ? user.pathHistory.length : 1;
+          const speedDisplay = (user.speed && user.speed > 0) ? `${user.speed.toFixed(1)} km/h` : '0.0 km/h';
+          const startTimeDisplay = (user.startLocation && user.startLocation.time)
+            ? new Date(user.startLocation.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            : 'Just now';
+
+          const isFollowing = (followedUserId === id);
 
           const card = document.createElement('div');
           card.className = `alert-card glass rounded-xl p-4 cursor-pointer border ${borderColor} slide-in`;
           card.onclick = () => flyToUser(user.lat, user.lng);
+
           card.innerHTML = `
             <div class="flex items-start justify-between mb-2">
               <div class="flex items-center gap-2">
                 <span class="text-lg">${genderIcon}</span>
                 <span class="font-bold text-sm text-slate-100">${escapeHtml(user.name)}</span>
               </div>
-              <span class="text-[10px] ${genderColor} font-semibold uppercase tracking-wider bg-slate-800/60 px-2 py-0.5 rounded-full">${user.gender}</span>
+              <span class="text-[10px] ${genderColor} font-semibold uppercase tracking-wider bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/60">${user.gender}</span>
             </div>
-            <div class="space-y-1.5 text-xs">
+
+            <!-- Contact & Elapsed -->
+            <div class="space-y-1 text-xs">
               <div class="flex items-center gap-2 text-slate-400">
                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
                 <span>${escapeHtml(user.phone)}</span>
@@ -592,59 +801,184 @@
                 <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
                 <span>${user.lat.toFixed(5)}, ${user.lng.toFixed(5)}</span>
               </div>
-              <div class="flex items-center gap-2 text-slate-500">
-                <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                <span>${elapsed}</span>
+            </div>
+
+            <!-- Live Movement Metrics Grid -->
+            <div class="mt-3 grid grid-cols-2 gap-2 bg-slate-900/80 p-2.5 rounded-lg border border-slate-800 text-xs">
+              <div>
+                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Distance Moved</span>
+                <span class="font-bold text-sky-400 font-mono text-[13px]">${distFormatted}</span>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Live Speed</span>
+                <span class="font-bold text-amber-400 font-mono text-[13px]">${speedDisplay}</span>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Points Tracked</span>
+                <span class="font-bold text-emerald-400 font-mono">${pointsCount} pts</span>
+              </div>
+              <div>
+                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Started At</span>
+                <span class="font-bold text-slate-300 font-mono">${startTimeDisplay}</span>
               </div>
             </div>
-            <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
-              class="mt-3 inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition"
-              onclick="event.stopPropagation()">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-              Open in Google Maps
-            </a>
+
+            <!-- Follow User (Auto-Pan) Toggle Button -->
+            <button onclick="event.stopPropagation(); toggleFollowUser('${id}')"
+              class="w-full mt-3 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200 ${isFollowing ? 'following-active' : 'bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border border-slate-700/70'}">
+              <span>${isFollowing ? '🎯' : '🎥'}</span>
+              <span>${isFollowing ? 'Following (Auto-Pan Active)' : 'Follow User (Auto-Pan)'}</span>
+            </button>
+
+            <!-- Bottom Row: Google Maps & Elapsed -->
+            <div class="mt-2.5 flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+              <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
+                class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition"
+                onclick="event.stopPropagation()">
+                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                Google Maps
+              </a>
+              <span class="text-[11px] text-slate-500">${elapsed}</span>
+            </div>
           `;
           list.appendChild(card);
         });
       }
 
-      // Update map markers
+      // Update Map: Start Point, Breadcrumb Polyline, and Current Position Marker
       if (mapReady && map) {
         const activeIds = new Set(entries.map(([id]) => id));
 
-        // Remove stale markers
-        Object.keys(markers).forEach((id) => {
+        // Clean up stale layers
+        Object.keys(userLayers).forEach((id) => {
           if (!activeIds.has(id)) {
-            map.removeLayer(markers[id]);
-            delete markers[id];
+            if (userLayers[id].startMarker) map.removeLayer(userLayers[id].startMarker);
+            if (userLayers[id].polyline) map.removeLayer(userLayers[id].polyline);
+            if (userLayers[id].currentMarker) map.removeLayer(userLayers[id].currentMarker);
+            delete userLayers[id];
           }
         });
 
-        // Update or add markers
+        // Auto-pan if locked on a followed user
+        if (followedUserId && data[followedUserId]) {
+          const fu = data[followedUserId];
+          map.panTo([fu.lat, fu.lng], { animate: true, duration: 0.6 });
+        } else if (followedUserId && !data[followedUserId]) {
+          followedUserId = null;
+        }
+
+        // Render each active emergency
         entries.forEach(([id, user]) => {
-          const latlng = [user.lat, user.lng];
-          if (markers[id]) {
-            markers[id].setLatLng(latlng);
-            markers[id].setPopupContent(buildPopupContent(user));
+          const latlngs = (user.pathHistory && user.pathHistory.length > 0)
+            ? user.pathHistory.map((p) => Array.isArray(p) ? p : [p.lat, p.lng])
+            : [[user.lat, user.lng]];
+
+          const startPt = user.startLocation
+            ? [user.startLocation.lat, user.startLocation.lng]
+            : latlngs[0];
+          const currPt = [user.lat, user.lng];
+
+          if (userLayers[id]) {
+            // Update existing layers
+            userLayers[id].currentMarker.setLatLng(currPt);
+            userLayers[id].currentMarker.setPopupContent(buildPopupContent(user));
+            userLayers[id].polyline.setLatLngs(latlngs);
+
+            if (userLayers[id].startMarker) {
+              userLayers[id].startMarker.setLatLng(startPt);
+              userLayers[id].startMarker.setPopupContent(buildStartPopupContent(user));
+            }
           } else {
-            const marker = L.marker(latlng, { icon: createMarkerIcon(user.gender) })
+            // 1. Start Point Marker (🟢)
+            const startMarker = L.marker(startPt, { icon: createStartIcon() })
               .addTo(map)
-              .bindPopup(buildPopupContent(user), { maxWidth: 260 });
-            markers[id] = marker;
+              .bindPopup(buildStartPopupContent(user), { maxWidth: 240 });
+
+            // 2. Live Movement Trail (Polyline)
+            const polyline = L.polyline(latlngs, {
+              color: '#ef4444',
+              weight: 5,
+              opacity: 0.9,
+              lineJoin: 'round',
+              lineCap: 'round',
+              className: 'live-trail-polyline'
+            }).addTo(map);
+
+            // 3. Current Live Position Marker (🚨)
+            const currentMarker = L.marker(currPt, { icon: createMarkerIcon(user.gender) })
+              .addTo(map)
+              .bindPopup(buildPopupContent(user), { maxWidth: 280 });
+
+            userLayers[id] = { startMarker, polyline, currentMarker };
+
+            // If first active user on map and no user followed, pan to them
+            if (entries.length === 1 && !followedUserId) {
+              map.flyTo(currPt, 15, { duration: 1 });
+            }
           }
         });
       }
     }
 
-    function buildPopupContent(user) {
+    // Follow / Auto-pan toggle
+    function toggleFollowUser(userId) {
+      if (followedUserId === userId) {
+        followedUserId = null;
+      } else {
+        followedUserId = userId;
+        if (lastData && lastData[userId] && map && mapReady) {
+          map.flyTo([lastData[userId].lat, lastData[userId].lng], 17, { duration: 0.8 });
+        }
+      }
+      if (lastData) renderAdmin(lastData);
+    }
+
+    // 1. Start Point Popup
+    function buildStartPopupContent(user) {
+      const startTime = (user.startLocation && user.startLocation.time)
+        ? new Date(user.startLocation.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : 'Unknown';
+      const startLat = user.startLocation ? user.startLocation.lat : user.lat;
+      const startLng = user.startLocation ? user.startLocation.lng : user.lng;
+
       return `
-        <div style="font-size:13px;">
-          <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#f1f5f9;">${escapeHtml(user.name)}</div>
-          <div style="color:#94a3b8;margin-bottom:2px;">📱 ${escapeHtml(user.phone)}</div>
-          <div style="color:#94a3b8;margin-bottom:2px;">⚧ ${user.gender}</div>
-          <div style="color:#94a3b8;font-family:monospace;font-size:11px;">${user.lat.toFixed(6)}, ${user.lng.toFixed(6)}</div>
-          <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank"
-            style="display:inline-block;margin-top:8px;color:#38bdf8;font-size:11px;font-weight:600;text-decoration:none;">
+        <div style="font-size:12px;color:#f1f5f9;min-width:180px;">
+          <div style="font-weight:800;font-size:13px;color:#34d399;display:flex;align-items:center;gap:4px;margin-bottom:6px;">
+            <span>🟢</span> SOS Started Here
+          </div>
+          <div style="margin-bottom:3px;"><b>User:</b> ${escapeHtml(user.name)}</div>
+          <div style="color:#94a3b8;margin-bottom:3px;">🕒 <b>Start Time:</b> ${startTime}</div>
+          <div style="color:#64748b;font-family:monospace;font-size:11px;">📍 ${startLat.toFixed(6)}, ${startLng.toFixed(6)}</div>
+        </div>`;
+    }
+
+    // 3. Current Position Popup
+    function buildPopupContent(user) {
+      const distFormatted = formatDistance(user.distanceTraveled || 0);
+      const ptsCount = (user.pathHistory && user.pathHistory.length) || 1;
+      const speedDisplay = (user.speed !== undefined && user.speed !== null && user.speed > 0)
+        ? `${user.speed.toFixed(1)} km/h`
+        : '0.0 km/h';
+
+      return `
+        <div style="font-size:12px;color:#f1f5f9;min-width:220px;">
+          <div style="font-weight:800;font-size:14px;margin-bottom:4px;color:#f87171;display:flex;align-items:center;justify-content:space-between;">
+            <span>🚨 ${escapeHtml(user.name)}</span>
+            <span style="font-size:10px;font-weight:700;background:rgba(239,68,68,0.2);color:#fca5a5;padding:1px 6px;border-radius:9999px;">LIVE</span>
+          </div>
+          <div style="color:#cbd5e1;margin-bottom:4px;">📱 ${escapeHtml(user.phone)} | ${user.gender}</div>
+          
+          <div style="background:rgba(15,23,42,0.85);border:1px solid rgba(148,163,184,0.15);border-radius:8px;padding:8px;margin:6px 0;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;">
+            <div><span style="color:#94a3b8;display:block;">Distance</span><b style="color:#38bdf8;font-size:12px;">${distFormatted}</b></div>
+            <div><span style="color:#94a3b8;display:block;">Speed</span><b style="color:#fbbf24;font-size:12px;">${speedDisplay}</b></div>
+            <div><span style="color:#94a3b8;display:block;">Points</span><b style="color:#34d399;">${ptsCount} pts</b></div>
+            <div><span style="color:#94a3b8;display:block;">Updated</span><b style="color:#cbd5e1;">${timeAgo(user.timestamp)}</b></div>
+          </div>
+          
+          <div style="color:#64748b;font-family:monospace;font-size:11px;margin-bottom:6px;">📍 ${user.lat.toFixed(6)}, ${user.lng.toFixed(6)}</div>
+          
+          <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
+            style="display:inline-flex;align-items:center;gap:4px;color:#38bdf8;font-size:11px;font-weight:600;text-decoration:none;">
             Open in Google Maps ↗
           </a>
         </div>`;
@@ -652,11 +986,17 @@
 
     function flyToUser(lat, lng) {
       if (map && mapReady) {
-        map.flyTo([lat, lng], 17, { duration: 1.2 });
+        map.flyTo([lat, lng], 17, { duration: 0.8 });
       }
     }
 
     // ──────────────── Helpers ────────────────
+    function formatDistance(meters) {
+      if (!meters || meters < 1) return '0 m';
+      if (meters < 1000) return `${Math.round(meters)} m`;
+      return `${(meters / 1000).toFixed(2)} km`;
+    }
+
     function escapeHtml(str) {
       const d = document.createElement('div');
       d.textContent = str;
