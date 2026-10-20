@@ -343,22 +343,51 @@
     let adminUnlocked = false;
     let isSOS = false;
     let watchId = null;
+    let heartbeatInterval = null;
     let map = null;
     let mapReady = false;
-    let userLayers = {};         // socketId -> { startMarker, polyline, currentMarker }
+
+    // Separate layer dictionaries per user id
+    const startMarkers = {};
+    const liveMarkers = {};
+    const pathLines = {};
+
     let followedUserId = null;   // socketId of user locked for auto-pan
     let knownAlertIds = new Set();
     let lastData = null;
+
+    // Current coordinates
+    let currentLat = null;
+    let currentLng = null;
+    let currentSpeed = 0;
 
     // Simulator State
     let isSimulating = false;
     let simInterval = null;
     let simLat = 23.8103;
     let simLng = 90.4125;
-    let simAngle = Math.PI / 4;
     let simSteps = 0;
-    let lastKnownLat = null;
-    let lastKnownLng = null;
+    let simTotalDist = 0;
+    let simLastTime = 0;
+
+    // Distance calculation helper (Haversine formula in meters)
+    function getDistanceMeters(lat1, lon1, lat2, lon2) {
+      const pLat1 = parseFloat(lat1);
+      const pLon1 = parseFloat(lon1);
+      const pLat2 = parseFloat(lat2);
+      const pLon2 = parseFloat(lon2);
+      if (isNaN(pLat1) || isNaN(pLon1) || isNaN(pLat2) || isNaN(pLon2)) return 0;
+      const R = 6371e3;
+      const toRad = (deg) => (deg * Math.PI) / 180;
+      const dLat = toRad(pLat2 - pLat1);
+      const dLon = toRad(pLon2 - pLon1);
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(pLat1)) * Math.cos(toRad(pLat2)) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
 
     // ──────────────── Audio (Web Audio API beep) ────────────────
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -464,7 +493,7 @@
 
       // Re-render any alerts that arrived before map was ready
       if (lastData) {
-        renderAdmin(lastData);
+        updateAdminDashboard(lastData);
       }
     }
 
@@ -505,6 +534,30 @@
       });
     }
 
+    // ──────────────── Continuous Heartbeat ────────────────
+    function startHeartbeat() {
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      heartbeatInterval = setInterval(() => {
+        if (isSOS && currentLat !== null && currentLng !== null) {
+          socket.emit('sos-location', {
+            name: document.getElementById('user-name').value.trim() || 'Anonymous',
+            gender: document.getElementById('user-gender').value,
+            phone: document.getElementById('user-phone').value.trim() || 'N/A',
+            lat: currentLat,
+            lng: currentLng,
+            speed: currentSpeed || 0
+          });
+        }
+      }, 3000);
+    }
+
+    function stopHeartbeat() {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+      }
+    }
+
     // ──────────────── SOS Toggle ────────────────
     function toggleSOS() {
       if (!isSOS) {
@@ -526,25 +579,28 @@
       isSOS = true;
       updateSOSButton();
       updateStatusBanner('tracking');
+      startHeartbeat();
 
       if (!navigator.geolocation) {
         console.warn('Geolocation not supported, simulation available.');
         return;
       }
 
+      // Use high accuracy real GPS with 5000ms timeout
       watchId = navigator.geolocation.watchPosition(
         (pos) => {
-          // If simulator is actively driving coordinates, don't overwrite with static location
+          // If simulator is active, let simulator drive coordinates
           if (isSimulating) return;
 
           const { latitude: lat, longitude: lng, speed } = pos.coords;
-          lastKnownLat = lat;
-          lastKnownLng = lng;
+          currentLat = lat;
+          currentLng = lng;
           const speedKmh = (speed !== null && speed !== undefined && speed > 0)
-            ? Math.round(speed * 3.6 * 10) / 10
+            ? parseFloat((speed * 3.6).toFixed(1))
             : 0;
+          currentSpeed = speedKmh;
 
-          document.getElementById('coords-display').textContent = `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+          document.getElementById('coords-display').textContent = `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)} | Speed: ${speedKmh} km/h`;
 
           socket.emit('sos-location', {
             name,
@@ -557,17 +613,18 @@
         },
         (err) => {
           console.error('Geolocation error:', err);
-          if (!isSimulating) {
+          if (!isSimulating && currentLat === null) {
             updateStatusBanner('error');
           }
         },
-        { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
       );
     }
 
     function stopSOS() {
       isSOS = false;
       stopSimulation();
+      stopHeartbeat();
 
       if (watchId !== null) {
         navigator.geolocation.clearWatch(watchId);
@@ -577,6 +634,9 @@
       updateSOSButton();
       updateStatusBanner('idle');
       document.getElementById('coords-display').textContent = '';
+      currentLat = null;
+      currentLng = null;
+      currentSpeed = 0;
     }
 
     function updateSOSButton() {
@@ -627,7 +687,12 @@
 
     // ──────────────── 🚶 Movement Simulator (Test Feature) ────────────────
     function toggleSimulation() {
-      // If user hasn't started SOS yet, auto-populate test name and start SOS
+      if (isSimulating) {
+        stopSimulation();
+        return;
+      }
+
+      // If user hasn't started SOS yet, auto-populate name and start SOS
       if (!isSOS) {
         const nameInput = document.getElementById('user-name');
         if (!nameInput.value.trim()) {
@@ -636,64 +701,72 @@
         startSOS();
       }
 
-      isSimulating = !isSimulating;
+      isSimulating = true;
       updateSimButtonUI();
 
-      if (isSimulating) {
-        // Start simulation from last known coords or Dhaka center
-        if (lastKnownLat && lastKnownLng) {
-          simLat = lastKnownLat;
-          simLng = lastKnownLng;
-        } else {
-          simLat = 23.8103;
-          simLng = 90.4125;
-        }
-        simSteps = 0;
-        simAngle = Math.random() * Math.PI * 2;
-
-        const feedback = document.getElementById('sim-feedback');
-        if (feedback) feedback.textContent = '🚶 Simulating live road movement...';
-
-        // Emit initial simulated point immediately
-        emitSimulatedPoint();
-
-        // Continue walking every 2 seconds
-        simInterval = setInterval(() => {
-          emitSimulatedPoint();
-        }, 2000);
+      // Start from current location if available or default Dhaka coordinates
+      if (currentLat !== null && currentLng !== null) {
+        simLat = parseFloat(currentLat);
+        simLng = parseFloat(currentLng);
       } else {
-        stopSimulation();
+        simLat = 23.8103;
+        simLng = 90.4125;
       }
-    }
 
-    function emitSimulatedPoint() {
-      simSteps++;
-      // Wander with small realistic directional curves
-      simAngle += (Math.random() - 0.5) * 0.3;
+      currentLat = simLat;
+      currentLng = simLng;
+      simSteps = 0;
+      simTotalDist = 0;
+      simLastTime = Date.now();
+      currentSpeed = 0;
 
-      // Move approx 8 to 14 meters (0.00008 - 0.00013 degrees)
-      const stepDist = 0.00008 + Math.random() * 0.00005;
-      simLat += Math.cos(simAngle) * stepDist;
-      simLng += Math.sin(simAngle) * stepDist;
-      lastKnownLat = simLat;
-      lastKnownLng = simLng;
-
-      // Realistic speed (4.2 - 6.8 km/h)
-      const simSpeed = parseFloat((4.5 + Math.random() * 2.0).toFixed(1));
-
-      document.getElementById('coords-display').textContent = `📍 ${simLat.toFixed(6)}, ${simLng.toFixed(6)} | ${simSpeed} km/h`;
-      
       const feedback = document.getElementById('sim-feedback');
-      if (feedback) feedback.textContent = `🚶 Simulated Step #${simSteps} • Speed: ${simSpeed} km/h`;
+      if (feedback) feedback.textContent = `🚶 Simulator active • Initializing movement...`;
+      document.getElementById('coords-display').textContent = `📍 ${simLat.toFixed(6)}, ${simLng.toFixed(6)} | Speed: 0 km/h`;
 
+      // Emit initial point
       socket.emit('sos-location', {
         name: document.getElementById('user-name').value.trim() || 'Demo User',
         gender: document.getElementById('user-gender').value,
         phone: document.getElementById('user-phone').value.trim() || '01700000000',
         lat: simLat,
         lng: simLng,
-        speed: simSpeed
+        speed: 0
       });
+
+      // Move lat and lng by +0.00025 (~25-30 meters) every 1.5 seconds
+      simInterval = setInterval(() => {
+        simSteps++;
+        const prevLat = simLat;
+        const prevLng = simLng;
+        const now = Date.now();
+        const timeDiffSec = Math.max(1, (now - simLastTime) / 1000);
+        simLastTime = now;
+
+        simLat = parseFloat((simLat + 0.00025).toFixed(6));
+        simLng = parseFloat((simLng + 0.00025).toFixed(6));
+        currentLat = simLat;
+        currentLng = simLng;
+
+        const stepDist = getDistanceMeters(prevLat, prevLng, simLat, simLng);
+        simTotalDist += stepDist;
+        const calculatedSpeedKmh = parseFloat(((stepDist / timeDiffSec) * 3.6).toFixed(1));
+        currentSpeed = calculatedSpeedKmh;
+
+        document.getElementById('coords-display').textContent = `📍 ${simLat.toFixed(6)}, ${simLng.toFixed(6)} | Speed: ${calculatedSpeedKmh} km/h`;
+        if (feedback) {
+          feedback.textContent = `🚶 Step #${simSteps} • Dist: ${Math.round(simTotalDist)} m • Speed: ${calculatedSpeedKmh} km/h`;
+        }
+
+        socket.emit('sos-location', {
+          name: document.getElementById('user-name').value.trim() || 'Demo User',
+          gender: document.getElementById('user-gender').value,
+          phone: document.getElementById('user-phone').value.trim() || '01700000000',
+          lat: simLat,
+          lng: simLng,
+          speed: calculatedSpeedKmh
+        });
+      }, 1500);
     }
 
     function stopSimulation() {
@@ -724,30 +797,36 @@
       }
     }
 
-    // ──────────────── Admin Panel Rendering ────────────────
-    function renderAdmin(data) {
+    // ──────────────── Admin Panel Dashboard Rendering ────────────────
+    function updateAdminDashboard(data) {
       lastData = data;
-      const entries = Object.entries(data);
+      const entries = Object.entries(data || {});
       const count = entries.length;
 
       // Update badge
       const badge = document.getElementById('alert-badge');
-      badge.textContent = count;
-      badge.classList.remove('badge-bounce');
-      void badge.offsetWidth; // trigger reflow
-      badge.classList.add('badge-bounce');
+      if (badge) {
+        badge.textContent = count;
+        badge.classList.remove('badge-bounce');
+        void badge.offsetWidth; // trigger reflow
+        badge.classList.add('badge-bounce');
+      }
 
       // Update sidebar
       const list = document.getElementById('alert-list');
       const noAlerts = document.getElementById('no-alerts');
 
       if (count === 0) {
-        list.innerHTML = '';
-        list.appendChild(noAlerts);
-        noAlerts.style.display = 'flex';
+        if (list) {
+          list.innerHTML = '';
+          if (noAlerts) {
+            list.appendChild(noAlerts);
+            noAlerts.style.display = 'flex';
+          }
+        }
         followedUserId = null;
       } else {
-        if (noAlerts.parentElement === list) {
+        if (noAlerts && noAlerts.parentElement === list) {
           noAlerts.style.display = 'none';
         }
 
@@ -762,87 +841,97 @@
         knownAlertIds = currentIds;
 
         // Rebuild card list
-        list.innerHTML = '';
-        entries.forEach(([id, user]) => {
-          const genderIcon = user.gender === 'Female' ? '♀️' : user.gender === 'Male' ? '♂️' : '⚧';
-          const genderColor = user.gender === 'Female' ? 'text-rose-400' : user.gender === 'Male' ? 'text-blue-400' : 'text-purple-400';
-          const borderColor = user.gender === 'Female' ? 'border-rose-500/30' : user.gender === 'Male' ? 'border-blue-500/30' : 'border-purple-500/30';
-          const elapsed = timeAgo(user.timestamp);
+        if (list) {
+          list.innerHTML = '';
+          entries.forEach(([id, user]) => {
+            const latLngs = (user.pathHistory || []).map(p =>
+              Array.isArray(p) ? [parseFloat(p[0]), parseFloat(p[1])] : [parseFloat(p.lat), parseFloat(p.lng)]
+            );
+            if (latLngs.length === 0) {
+              latLngs.push([parseFloat(user.lat), parseFloat(user.lng)]);
+            }
 
-          const distFormatted = formatDistance(user.distanceTraveled || 0);
-          const pointsCount = (user.pathHistory && user.pathHistory.length) ? user.pathHistory.length : 1;
-          const speedDisplay = (user.speed && user.speed > 0) ? `${user.speed.toFixed(1)} km/h` : '0.0 km/h';
-          const startTimeDisplay = (user.startLocation && user.startLocation.time)
-            ? new Date(user.startLocation.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            : 'Just now';
+            const genderIcon = user.gender === 'Female' ? '♀️' : user.gender === 'Male' ? '♂️' : '⚧';
+            const genderColor = user.gender === 'Female' ? 'text-rose-400' : user.gender === 'Male' ? 'text-blue-400' : 'text-purple-400';
+            const borderColor = user.gender === 'Female' ? 'border-rose-500/30' : user.gender === 'Male' ? 'border-blue-500/30' : 'border-purple-500/30';
+            const elapsed = timeAgo(user.timestamp);
 
-          const isFollowing = (followedUserId === id);
+            const distDisplay = user.distanceTraveled >= 1000
+              ? (user.distanceTraveled / 1000).toFixed(2) + ' km'
+              : Math.round(user.distanceTraveled || 0) + ' m';
+            const speedDisplay = `${user.speed || 0} km/h`;
+            const startTimeDisplay = (user.startLocation && user.startLocation.time)
+              ? user.startLocation.time
+              : 'Just now';
 
-          const card = document.createElement('div');
-          card.className = `alert-card glass rounded-xl p-4 cursor-pointer border ${borderColor} slide-in`;
-          card.onclick = () => flyToUser(user.lat, user.lng);
+            const isFollowing = (followedUserId === id);
 
-          card.innerHTML = `
-            <div class="flex items-start justify-between mb-2">
-              <div class="flex items-center gap-2">
-                <span class="text-lg">${genderIcon}</span>
-                <span class="font-bold text-sm text-slate-100">${escapeHtml(user.name)}</span>
+            const card = document.createElement('div');
+            card.className = `alert-card glass rounded-xl p-4 cursor-pointer border ${borderColor} slide-in`;
+            card.onclick = () => flyToUser(user.lat, user.lng);
+
+            card.innerHTML = `
+              <div class="flex items-start justify-between mb-2">
+                <div class="flex items-center gap-2">
+                  <span class="text-lg">${genderIcon}</span>
+                  <span class="font-bold text-sm text-slate-100">${escapeHtml(user.name)}</span>
+                </div>
+                <span class="text-[10px] ${genderColor} font-semibold uppercase tracking-wider bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/60">${escapeHtml(user.gender)}</span>
               </div>
-              <span class="text-[10px] ${genderColor} font-semibold uppercase tracking-wider bg-slate-800/80 px-2 py-0.5 rounded-full border border-slate-700/60">${user.gender}</span>
-            </div>
 
-            <!-- Contact & Elapsed -->
-            <div class="space-y-1 text-xs">
-              <div class="flex items-center gap-2 text-slate-400">
-                <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
-                <span>${escapeHtml(user.phone)}</span>
+              <!-- Contact & Elapsed -->
+              <div class="space-y-1 text-xs">
+                <div class="flex items-center gap-2 text-slate-400">
+                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"/></svg>
+                  <span>${escapeHtml(user.phone)}</span>
+                </div>
+                <div class="flex items-center gap-2 text-slate-400 font-mono">
+                  <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                  <span>${parseFloat(user.lat).toFixed(5)}, ${parseFloat(user.lng).toFixed(5)}</span>
+                </div>
               </div>
-              <div class="flex items-center gap-2 text-slate-400 font-mono">
-                <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                <span>${user.lat.toFixed(5)}, ${user.lng.toFixed(5)}</span>
-              </div>
-            </div>
 
-            <!-- Live Movement Metrics Grid -->
-            <div class="mt-3 grid grid-cols-2 gap-2 bg-slate-900/80 p-2.5 rounded-lg border border-slate-800 text-xs">
-              <div>
-                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Distance Moved</span>
-                <span class="font-bold text-sky-400 font-mono text-[13px]">${distFormatted}</span>
+              <!-- Live Movement Metrics Grid -->
+              <div class="mt-3 grid grid-cols-2 gap-2 bg-slate-900/80 p-2.5 rounded-lg border border-slate-800 text-xs">
+                <div>
+                  <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Distance</span>
+                  <span class="font-bold text-sky-400 font-mono text-[13px]">${distDisplay}</span>
+                </div>
+                <div>
+                  <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Speed</span>
+                  <span class="font-bold text-amber-400 font-mono text-[13px]">${speedDisplay}</span>
+                </div>
+                <div>
+                  <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Points</span>
+                  <span class="font-bold text-emerald-400 font-mono">${latLngs.length}</span>
+                </div>
+                <div>
+                  <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Started At</span>
+                  <span class="font-bold text-slate-300 font-mono">${startTimeDisplay}</span>
+                </div>
               </div>
-              <div>
-                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Live Speed</span>
-                <span class="font-bold text-amber-400 font-mono text-[13px]">${speedDisplay}</span>
-              </div>
-              <div>
-                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Points Tracked</span>
-                <span class="font-bold text-emerald-400 font-mono">${pointsCount} pts</span>
-              </div>
-              <div>
-                <span class="text-[10px] text-slate-500 uppercase tracking-wider block">Started At</span>
-                <span class="font-bold text-slate-300 font-mono">${startTimeDisplay}</span>
-              </div>
-            </div>
 
-            <!-- Follow User (Auto-Pan) Toggle Button -->
-            <button onclick="event.stopPropagation(); toggleFollowUser('${id}')"
-              class="w-full mt-3 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200 ${isFollowing ? 'following-active' : 'bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border border-slate-700/70'}">
-              <span>${isFollowing ? '🎯' : '🎥'}</span>
-              <span>${isFollowing ? 'Following (Auto-Pan Active)' : 'Follow User (Auto-Pan)'}</span>
-            </button>
+              <!-- Follow User (Auto-Pan) Toggle Button -->
+              <button onclick="event.stopPropagation(); toggleFollowUser('${id}')"
+                class="w-full mt-3 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200 ${isFollowing ? 'following-active' : 'bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border border-slate-700/70'}">
+                <span>${isFollowing ? '🎯' : '🎥'}</span>
+                <span>${isFollowing ? 'Following (Auto-Pan Active)' : 'Follow User (Auto-Pan)'}</span>
+              </button>
 
-            <!-- Bottom Row: Google Maps & Elapsed -->
-            <div class="mt-2.5 flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
-              <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
-                class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition"
-                onclick="event.stopPropagation()">
-                <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
-                Google Maps
-              </a>
-              <span class="text-[11px] text-slate-500">${elapsed}</span>
-            </div>
-          `;
-          list.appendChild(card);
-        });
+              <!-- Bottom Row: Google Maps & Elapsed -->
+              <div class="mt-2.5 flex items-center justify-between text-xs pt-1 border-t border-slate-800/60">
+                <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
+                  class="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-400 hover:text-sky-300 transition"
+                  onclick="event.stopPropagation()">
+                  <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+                  Google Maps
+                </a>
+                <span class="text-[11px] text-slate-500">${elapsed}</span>
+              </div>
+            `;
+            list.appendChild(card);
+          });
+        }
       }
 
       // Update Map: Start Point, Breadcrumb Polyline, and Current Position Marker
@@ -850,12 +939,22 @@
         const activeIds = new Set(entries.map(([id]) => id));
 
         // Clean up stale layers
-        Object.keys(userLayers).forEach((id) => {
+        Object.keys(startMarkers).forEach((id) => {
           if (!activeIds.has(id)) {
-            if (userLayers[id].startMarker) map.removeLayer(userLayers[id].startMarker);
-            if (userLayers[id].polyline) map.removeLayer(userLayers[id].polyline);
-            if (userLayers[id].currentMarker) map.removeLayer(userLayers[id].currentMarker);
-            delete userLayers[id];
+            if (startMarkers[id]) map.removeLayer(startMarkers[id]);
+            delete startMarkers[id];
+          }
+        });
+        Object.keys(pathLines).forEach((id) => {
+          if (!activeIds.has(id)) {
+            if (pathLines[id]) map.removeLayer(pathLines[id]);
+            delete pathLines[id];
+          }
+        });
+        Object.keys(liveMarkers).forEach((id) => {
+          if (!activeIds.has(id)) {
+            if (liveMarkers[id]) map.removeLayer(liveMarkers[id]);
+            delete liveMarkers[id];
           }
         });
 
@@ -869,33 +968,34 @@
 
         // Render each active emergency
         entries.forEach(([id, user]) => {
-          const latlngs = (user.pathHistory && user.pathHistory.length > 0)
-            ? user.pathHistory.map((p) => Array.isArray(p) ? p : [p.lat, p.lng])
-            : [[user.lat, user.lng]];
+          const latLngs = (user.pathHistory || []).map(p =>
+            Array.isArray(p) ? [parseFloat(p[0]), parseFloat(p[1])] : [parseFloat(p.lat), parseFloat(p.lng)]
+          );
+          if (latLngs.length === 0) {
+            latLngs.push([parseFloat(user.lat), parseFloat(user.lng)]);
+          }
 
-          const startPt = user.startLocation
-            ? [user.startLocation.lat, user.startLocation.lng]
-            : latlngs[0];
-          const currPt = [user.lat, user.lng];
+          const startPos = latLngs[0];
+          const currPos = [parseFloat(user.lat), parseFloat(user.lng)];
 
-          if (userLayers[id]) {
-            // Update existing layers
-            userLayers[id].currentMarker.setLatLng(currPt);
-            userLayers[id].currentMarker.setPopupContent(buildPopupContent(user));
-            userLayers[id].polyline.setLatLngs(latlngs);
+          // 1. Start Point Marker (startMarkers[id]): Place at latLngs[0] with a green icon
+          if (startMarkers[id]) {
+            startMarkers[id].setLatLng(startPos);
+            startMarkers[id].setPopupContent(buildStartPopupContent(user, startPos));
+          } else {
+            startMarkers[id] = L.marker(startPos, { icon: createStartIcon() })
+              .addTo(map)
+              .bindPopup(buildStartPopupContent(user, startPos), { maxWidth: 240 });
+          }
 
-            if (userLayers[id].startMarker) {
-              userLayers[id].startMarker.setLatLng(startPt);
-              userLayers[id].startMarker.setPopupContent(buildStartPopupContent(user));
+          // 2. Live Movement Trail (Polyline): If exists, call setLatLngs and redraw. If not, create L.polyline
+          if (pathLines[id]) {
+            pathLines[id].setLatLngs(latLngs);
+            if (typeof pathLines[id].redraw === 'function') {
+              pathLines[id].redraw();
             }
           } else {
-            // 1. Start Point Marker (🟢)
-            const startMarker = L.marker(startPt, { icon: createStartIcon() })
-              .addTo(map)
-              .bindPopup(buildStartPopupContent(user), { maxWidth: 240 });
-
-            // 2. Live Movement Trail (Polyline)
-            const polyline = L.polyline(latlngs, {
+            pathLines[id] = L.polyline(latLngs, {
               color: '#ef4444',
               weight: 5,
               opacity: 0.9,
@@ -903,22 +1003,27 @@
               lineCap: 'round',
               className: 'live-trail-polyline'
             }).addTo(map);
+          }
 
-            // 3. Current Live Position Marker (🚨)
-            const currentMarker = L.marker(currPt, { icon: createMarkerIcon(user.gender) })
+          // 3. Current Live Position Marker (liveMarkers[id]): Call setLatLng and update popup with live speed and distance
+          if (liveMarkers[id]) {
+            liveMarkers[id].setLatLng(currPos);
+            liveMarkers[id].setPopupContent(buildPopupContent(user));
+          } else {
+            liveMarkers[id] = L.marker(currPos, { icon: createMarkerIcon(user.gender) })
               .addTo(map)
               .bindPopup(buildPopupContent(user), { maxWidth: 280 });
+          }
 
-            userLayers[id] = { startMarker, polyline, currentMarker };
-
-            // If first active user on map and no user followed, pan to them
-            if (entries.length === 1 && !followedUserId) {
-              map.flyTo(currPt, 15, { duration: 1 });
-            }
+          // If first active user on map and no user followed, pan to them
+          if (entries.length === 1 && !followedUserId) {
+            map.flyTo(currPos, 15, { duration: 1 });
           }
         });
       }
     }
+
+    const renderAdmin = updateAdminDashboard;
 
     // Follow / Auto-pan toggle
     function toggleFollowUser(userId) {
@@ -930,16 +1035,16 @@
           map.flyTo([lastData[userId].lat, lastData[userId].lng], 17, { duration: 0.8 });
         }
       }
-      if (lastData) renderAdmin(lastData);
+      if (lastData) updateAdminDashboard(lastData);
     }
 
     // 1. Start Point Popup
-    function buildStartPopupContent(user) {
+    function buildStartPopupContent(user, startPos) {
       const startTime = (user.startLocation && user.startLocation.time)
-        ? new Date(user.startLocation.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        ? user.startLocation.time
         : 'Unknown';
-      const startLat = user.startLocation ? user.startLocation.lat : user.lat;
-      const startLng = user.startLocation ? user.startLocation.lng : user.lng;
+      const startLat = startPos ? startPos[0] : (user.startLocation ? user.startLocation.lat : user.lat);
+      const startLng = startPos ? startPos[1] : (user.startLocation ? user.startLocation.lng : user.lng);
 
       return `
         <div style="font-size:12px;color:#f1f5f9;min-width:180px;">
@@ -948,17 +1053,17 @@
           </div>
           <div style="margin-bottom:3px;"><b>User:</b> ${escapeHtml(user.name)}</div>
           <div style="color:#94a3b8;margin-bottom:3px;">🕒 <b>Start Time:</b> ${startTime}</div>
-          <div style="color:#64748b;font-family:monospace;font-size:11px;">📍 ${startLat.toFixed(6)}, ${startLng.toFixed(6)}</div>
+          <div style="color:#64748b;font-family:monospace;font-size:11px;">📍 ${parseFloat(startLat).toFixed(6)}, ${parseFloat(startLng).toFixed(6)}</div>
         </div>`;
     }
 
     // 3. Current Position Popup
     function buildPopupContent(user) {
-      const distFormatted = formatDistance(user.distanceTraveled || 0);
+      const distFormatted = user.distanceTraveled >= 1000
+        ? (user.distanceTraveled / 1000).toFixed(2) + ' km'
+        : Math.round(user.distanceTraveled || 0) + ' m';
+      const speedFormatted = `${user.speed || 0} km/h`;
       const ptsCount = (user.pathHistory && user.pathHistory.length) || 1;
-      const speedDisplay = (user.speed !== undefined && user.speed !== null && user.speed > 0)
-        ? `${user.speed.toFixed(1)} km/h`
-        : '0.0 km/h';
 
       return `
         <div style="font-size:12px;color:#f1f5f9;min-width:220px;">
@@ -966,7 +1071,7 @@
             <span>🚨 ${escapeHtml(user.name)}</span>
             <span style="font-size:10px;font-weight:700;background:rgba(239,68,68,0.2);color:#fca5a5;padding:1px 6px;border-radius:9999px;">LIVE</span>
           </div>
-          <div style="color:#cbd5e1;margin-bottom:4px;">📱 ${escapeHtml(user.phone)} | ${user.gender}</div>
+          <div style="color:#cbd5e1;margin-bottom:4px;">📱 ${escapeHtml(user.phone)} | ${escapeHtml(user.gender)}</div>
           
           <div style="background:rgba(15,23,42,0.85);border:1px solid rgba(148,163,184,0.15);border-radius:8px;padding:8px;margin:6px 0;display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px;">
             <div><span style="color:#94a3b8;display:block;">Distance</span><b style="color:#38bdf8;font-size:12px;">${distFormatted}</b></div>
@@ -975,7 +1080,7 @@
             <div><span style="color:#94a3b8;display:block;">Updated</span><b style="color:#cbd5e1;">${timeAgo(user.timestamp)}</b></div>
           </div>
           
-          <div style="color:#64748b;font-family:monospace;font-size:11px;margin-bottom:6px;">📍 ${user.lat.toFixed(6)}, ${user.lng.toFixed(6)}</div>
+          <div style="color:#64748b;font-family:monospace;font-size:11px;margin-bottom:6px;">📍 ${parseFloat(user.lat).toFixed(6)}, ${parseFloat(user.lng).toFixed(6)}</div>
           
           <a href="https://www.google.com/maps?q=${user.lat},${user.lng}" target="_blank" rel="noopener noreferrer"
             style="display:inline-flex;align-items:center;gap:4px;color:#38bdf8;font-size:11px;font-weight:600;text-decoration:none;">
@@ -998,12 +1103,15 @@
     }
 
     function escapeHtml(str) {
+      if (!str) return '';
       const d = document.createElement('div');
       d.textContent = str;
       return d.innerHTML;
     }
 
     function timeAgo(ts) {
+      if (!ts) return 'Just now';
+      if (typeof ts === 'string') return ts;
       const diff = Math.floor((Date.now() - ts) / 1000);
       if (diff < 5) return 'Just now';
       if (diff < 60) return `${diff}s ago`;
@@ -1013,12 +1121,12 @@
 
     // ──────────────── Socket.io Listeners ────────────────
     socket.on('initial-data', (data) => {
-      knownAlertIds = new Set(Object.keys(data));
-      renderAdmin(data);
+      knownAlertIds = new Set(Object.keys(data || {}));
+      updateAdminDashboard(data);
     });
 
     socket.on('update-admin', (data) => {
-      renderAdmin(data);
+      updateAdminDashboard(data);
     });
 
     // ──────────────── Init ────────────────

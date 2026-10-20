@@ -12,15 +12,21 @@ const io = new Server(server, {
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Haversine formula to calculate distance between two coordinates in meters
+// Haversine formula to calculate distance between two coordinates in meters strictly parsing numbers
 function getDistanceMeters(lat1, lon1, lat2, lon2) {
+  const pLat1 = parseFloat(lat1);
+  const pLon1 = parseFloat(lon1);
+  const pLat2 = parseFloat(lat2);
+  const pLon2 = parseFloat(lon2);
+  if (isNaN(pLat1) || isNaN(pLon1) || isNaN(pLat2) || isNaN(pLon2)) return 0;
+
   const R = 6371e3; // Earth radius in meters
   const toRad = (deg) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
+  const dLat = toRad(pLat2 - pLat1);
+  const dLon = toRad(pLon2 - pLon1);
   const a =
     Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.cos(toRad(pLat1)) * Math.cos(toRad(pLat2)) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
@@ -37,30 +43,34 @@ io.on('connection', (socket) => {
 
   // Handle incoming SOS location updates
   socket.on('sos-location', (data) => {
-    const { name, gender, phone, lat, lng, speed } = data;
+    if (!data) return;
+    const lat = parseFloat(data.lat);
+    const lng = parseFloat(data.lng);
+    if (isNaN(lat) || isNaN(lng)) return;
+
     const now = Date.now();
-    const currentSpeed = typeof speed === 'number' && !isNaN(speed) ? Math.max(0, speed) : 0;
 
     if (!activeEmergencies[socket.id]) {
-      // First location for this socket
+      // First update for this socket.id
       activeEmergencies[socket.id] = {
         socketId: socket.id,
-        name: name || 'Anonymous',
-        gender: gender || 'Other',
-        phone: phone || 'N/A',
+        name: data.name || 'Anonymous',
+        gender: data.gender || 'Other',
+        phone: data.phone || 'N/A',
         lat,
         lng,
-        speed: currentSpeed,
-        timestamp: now,
+        speed: 0,
+        timestamp: new Date().toLocaleTimeString(),
         startLocation: {
           lat,
           lng,
-          time: now
+          time: new Date().toLocaleTimeString()
         },
         pathHistory: [
-          { lat, lng, timestamp: now }
+          [lat, lng]
         ],
         distanceTraveled: 0,
+        lastUpdateTime: now,
         isNew: true
       };
 
@@ -68,32 +78,38 @@ io.on('connection', (socket) => {
     } else {
       // Subsequent location updates for existing SOS
       const user = activeEmergencies[socket.id];
-      user.name = name || user.name;
-      user.gender = gender || user.gender;
-      user.phone = phone || user.phone;
+      if (data.name) user.name = data.name;
+      if (data.gender) user.gender = data.gender;
+      if (data.phone) user.phone = data.phone;
+
+      const lastPoint = user.pathHistory[user.pathHistory.length - 1];
+      const prevLat = Array.isArray(lastPoint) ? parseFloat(lastPoint[0]) : parseFloat(lastPoint.lat);
+      const prevLng = Array.isArray(lastPoint) ? parseFloat(lastPoint[1]) : parseFloat(lastPoint.lng);
+
+      const segmentDist = getDistanceMeters(prevLat, prevLng, lat, lng);
+      const timeDiffSec = Math.max(1, (now - (user.lastUpdateTime || now)) / 1000);
+
+      // Lower movement threshold to 0.5 meters
+      if (segmentDist >= 0.5) {
+        user.distanceTraveled = (user.distanceTraveled || 0) + segmentDist;
+        const calculatedSpeedKmh = (segmentDist / timeDiffSec) * 3.6;
+        user.speed = data.speed && parseFloat(data.speed) > 0
+          ? parseFloat(data.speed)
+          : parseFloat(calculatedSpeedKmh.toFixed(1));
+        user.pathHistory.push([lat, lng]);
+        user.lastUpdateTime = now;
+      }
+
+      // Always update live coordinates and timestamp
       user.lat = lat;
       user.lng = lng;
-      user.speed = currentSpeed;
-      user.timestamp = now;
+      user.timestamp = new Date().toLocaleTimeString();
       user.isNew = false;
 
-      // Distance from the previous recorded point
-      const lastPoint = user.pathHistory[user.pathHistory.length - 1];
-      let distMeters = 0;
-      if (lastPoint) {
-        distMeters = getDistanceMeters(lastPoint.lat, lastPoint.lng, lat, lng);
-      }
-
-      // Avoid adding duplicate consecutive points if moved less than 2 meters
-      if (!lastPoint || distMeters >= 2) {
-        user.pathHistory.push({ lat, lng, timestamp: now });
-        user.distanceTraveled = (user.distanceTraveled || 0) + distMeters;
-      }
-
-      console.log(`[SOS-UPDATE] ${user.name} @ (${lat}, ${lng}) | Points: ${user.pathHistory.length} | Dist: ${Math.round(user.distanceTraveled)}m | Speed: ${currentSpeed} km/h`);
+      console.log(`[SOS-UPDATE] ${user.name} @ (${lat}, ${lng}) | Points: ${user.pathHistory.length} | Dist: ${Math.round(user.distanceTraveled)}m | Speed: ${user.speed} km/h`);
     }
 
-    // Broadcast updated emergencies to ALL connected clients
+    // Immediately broadcast updated emergencies to ALL connected clients
     io.emit('update-admin', activeEmergencies);
   });
 
