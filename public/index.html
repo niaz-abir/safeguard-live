@@ -297,6 +297,10 @@
                 <span class="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse"></span>
                 <span>🚨 Current Live Position</span>
               </div>
+              <div class="flex items-center gap-2">
+                <span class="w-2.5 h-2.5 rounded-full bg-blue-500 border border-white"></span>
+                <span>🚓 Nearest Police Station</span>
+              </div>
             </div>
           </div>
         </div>
@@ -351,6 +355,8 @@
     const startMarkers = {};
     const liveMarkers = {};
     const pathLines = {};
+    const policeMarkers = {}; // socketId -> array of L.marker
+    const policeLines = {};   // socketId -> L.polyline connector
 
     let followedUserId = null;   // socketId of user locked for auto-pan
     let knownAlertIds = new Set();
@@ -534,6 +540,34 @@
         iconAnchor: [20, 20],
         popupAnchor: [0, -22]
       });
+    }
+
+    // 4. Police Station Marker Icon (🚓)
+    function createPoliceIcon() {
+      return L.divIcon({
+        className: '',
+        html: `
+          <div style="position:relative;width:38px;height:38px;">
+            <div style="position:absolute;inset:0;background:#2563eb;border-radius:50%;opacity:0.4;animation:sosPulse 1.8s infinite;"></div>
+            <div style="position:absolute;inset:3px;background:linear-gradient(135deg, #1d4ed8, #0f172a);border-radius:50%;border:2px solid #93c5fd;box-shadow:0 0 12px rgba(37,99,235,0.9);display:flex;align-items:center;justify-content:center;font-size:16px;">
+              🚓
+            </div>
+          </div>`,
+        iconSize: [38, 38],
+        iconAnchor: [19, 19],
+        popupAnchor: [0, -22]
+      });
+    }
+
+    // Show both victim and nearest police station framed on the map
+    function showPoliceOnMap(userLat, userLng, policeLat, policeLng) {
+      if (map && mapReady) {
+        const bounds = L.latLngBounds([
+          [parseFloat(userLat), parseFloat(userLng)],
+          [parseFloat(policeLat), parseFloat(policeLng)]
+        ]);
+        map.fitBounds(bounds, { padding: [60, 60], maxZoom: 16 });
+      }
     }
 
     // ──────────────── Continuous Heartbeat ────────────────
@@ -942,6 +976,40 @@
                 </div>
               </div>
 
+              <!-- 🚓 Nearest Police Station Info Box -->
+              ${user.nearestPolice ? `
+                <div class="mt-3 bg-gradient-to-br from-blue-950/70 via-slate-900/85 to-blue-950/40 p-3 rounded-xl border border-blue-500/40 text-xs shadow-md">
+                  <div class="flex items-center justify-between mb-1.5">
+                    <div class="flex items-center gap-1.5 font-bold text-blue-300">
+                      <span class="text-sm">🚓</span>
+                      <span>Nearest Police Station</span>
+                    </div>
+                    <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/40 font-mono">
+                      ${user.nearestPolice.distanceMeters >= 1000 ? (user.nearestPolice.distanceMeters / 1000).toFixed(2) + ' km away' : Math.round(user.nearestPolice.distanceMeters) + ' m away'}
+                    </span>
+                  </div>
+                  <div class="font-bold text-slate-100 text-[13px] flex items-center justify-between">
+                    <span>${escapeHtml(user.nearestPolice.name)}</span>
+                    ${user.nearestPolice.phone ? `
+                      <a href="tel:${user.nearestPolice.phone}" class="text-[11px] text-blue-400 hover:text-blue-300 font-mono flex items-center gap-1 ml-2" onclick="event.stopPropagation()">
+                        📞 ${escapeHtml(user.nearestPolice.phone)}
+                      </a>
+                    ` : ''}
+                  </div>
+                  <div class="mt-2.5 flex items-center gap-2">
+                    <button onclick="event.stopPropagation(); showPoliceOnMap(${user.lat}, ${user.lng}, ${user.nearestPolice.lat}, ${user.nearestPolice.lng})"
+                      class="flex-1 py-1.5 px-2 rounded-lg bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-[11px] font-semibold flex items-center justify-center gap-1 transition">
+                      <span>🗺️</span> Show on Map
+                    </button>
+                    <a href="https://www.google.com/maps/dir/${user.lat},${user.lng}/${user.nearestPolice.lat},${user.nearestPolice.lng}"
+                      target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()"
+                      class="flex-1 py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 text-[11px] font-semibold flex items-center justify-center gap-1 transition text-center">
+                      <span>↗</span> Directions
+                    </a>
+                  </div>
+                </div>
+              ` : ''}
+
               <!-- Follow User (Auto-Pan) Toggle Button -->
               <button onclick="event.stopPropagation(); toggleFollowUser('${id}')"
                 class="w-full mt-3 py-1.5 px-3 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-all duration-200 ${isFollowing ? 'following-active' : 'bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 border border-slate-700/70'}">
@@ -986,6 +1054,22 @@
           if (!activeIds.has(id)) {
             if (liveMarkers[id]) map.removeLayer(liveMarkers[id]);
             delete liveMarkers[id];
+          }
+        });
+        Object.keys(policeMarkers).forEach((id) => {
+          if (!activeIds.has(id)) {
+            if (policeMarkers[id]) {
+              policeMarkers[id].forEach(m => map.removeLayer(m));
+              delete policeMarkers[id];
+            }
+          }
+        });
+        Object.keys(policeLines).forEach((id) => {
+          if (!activeIds.has(id)) {
+            if (policeLines[id]) {
+              map.removeLayer(policeLines[id]);
+              delete policeLines[id];
+            }
           }
         });
 
@@ -1044,6 +1128,72 @@
             liveMarkers[id] = L.marker(currPos, { icon: createMarkerIcon(user.gender) })
               .addTo(map)
               .bindPopup(buildPopupContent(user), { maxWidth: 280 });
+          }
+
+          // 4. Police Station Connector Line & Markers
+          if (user.nearestPolice) {
+            const uPt = currPos;
+            const pPt = [parseFloat(user.nearestPolice.lat), parseFloat(user.nearestPolice.lng)];
+            const pDistText = user.nearestPolice.distanceMeters >= 1000
+              ? (user.nearestPolice.distanceMeters / 1000).toFixed(2) + ' km'
+              : Math.round(user.nearestPolice.distanceMeters) + ' m';
+            const tooltipContent = `🚓 ${pDistText} to ${escapeHtml(user.nearestPolice.name)}`;
+
+            // Connector line (blue dashed)
+            if (policeLines[id]) {
+              policeLines[id].setLatLngs([uPt, pPt]);
+              if (policeLines[id].getTooltip()) {
+                policeLines[id].setTooltipContent(tooltipContent);
+              }
+            } else {
+              policeLines[id] = L.polyline([uPt, pPt], {
+                color: '#3b82f6',
+                weight: 2.5,
+                opacity: 0.85,
+                dashArray: '6, 8'
+              }).addTo(map);
+              policeLines[id].bindTooltip(tooltipContent, {
+                permanent: false,
+                direction: 'center'
+              });
+            }
+
+            // Police Station Markers (top nearby stations)
+            if (policeMarkers[id]) {
+              policeMarkers[id].forEach(m => map.removeLayer(m));
+            }
+            policeMarkers[id] = [];
+
+            const pStations = user.nearbyPoliceList && user.nearbyPoliceList.length > 0
+              ? user.nearbyPoliceList
+              : [user.nearestPolice];
+
+            pStations.forEach(station => {
+              const sPos = [parseFloat(station.lat), parseFloat(station.lng)];
+              const sDist = station.distanceMeters >= 1000
+                ? (station.distanceMeters / 1000).toFixed(2) + ' km'
+                : Math.round(station.distanceMeters) + ' m';
+
+              const pm = L.marker(sPos, { icon: createPoliceIcon() })
+                .addTo(map)
+                .bindPopup(`
+                  <div style="font-size:12px;color:#f1f5f9;min-width:210px;">
+                    <div style="font-weight:800;font-size:13px;color:#60a5fa;display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+                      <span>🚓</span> ${escapeHtml(station.name)}
+                    </div>
+                    <div style="color:#94a3b8;margin-bottom:4px;">
+                      Distance from Victim: <b style="color:#38bdf8;">${sDist} away</b>
+                    </div>
+                    ${station.phone ? `<div style="color:#cbd5e1;margin-bottom:6px;">📞 <b>Phone:</b> <a href="tel:${station.phone}" style="color:#60a5fa;text-decoration:none;">${escapeHtml(station.phone)}</a></div>` : ''}
+                    <a href="https://www.google.com/maps/dir/${user.lat},${user.lng}/${station.lat},${station.lng}" target="_blank" rel="noopener noreferrer"
+                      style="display:inline-flex;align-items:center;gap:4px;color:#38bdf8;font-size:11px;font-weight:600;text-decoration:none;">
+                      ↗ Google Maps Directions from Victim
+                    </a>
+                  </div>
+                `, { maxWidth: 280 });
+
+              policeMarkers[id].push(pm);
+            });
           }
 
           // If first active user on map and no user followed, pan to them
