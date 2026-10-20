@@ -173,7 +173,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
       
       <!-- Brand Logo & Title -->
-      <a href="#" class="flex items-center gap-3 group">
+      <a href="/" class="flex items-center gap-3 group">
         <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-400 via-blue-600 to-indigo-700 flex items-center justify-center shadow-lg shadow-cyan-500/25 group-hover:scale-105 transition-transform duration-300">
           <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.3">
             <path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
@@ -188,18 +188,41 @@
         </div>
       </a>
 
-      <!-- View Switcher -->
-      <div class="flex items-center gap-1 bg-[#081226] p-1 rounded-xl border border-cyan-500/25 shadow-inner">
-        <button id="btn-user-tab"
-          onclick="switchView('user')"
-          class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm shadow-cyan-500/20">
-          <span>👤 User Mode</span>
-        </button>
-        <button id="btn-admin-tab"
-          onclick="requestAdminAccess()"
-          class="px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 text-slate-400 hover:text-slate-200">
-          <span>🛡️ Admin Panel</span>
-        </button>
+      <!-- User Mode Navbar Actions (Active on '/') -->
+      <div id="user-nav-actions" class="flex items-center gap-2 sm:gap-3">
+        <!-- Live system status pill -->
+        <div class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-950/60 border border-emerald-500/30 text-emerald-300 text-xs font-semibold shadow-sm">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+          <span class="hidden sm:inline">GPS Network Online</span>
+          <span class="sm:hidden">GPS Active</span>
+        </div>
+
+        <!-- Quick link button to Area Safety Report site -->
+        <a href="https://area-safety-report.onrender.com" target="_blank" rel="noopener noreferrer"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#081226] hover:bg-[#0d1d3a] text-cyan-300 hover:text-white border border-cyan-500/30 hover:border-cyan-400 text-xs font-semibold transition-all duration-200 shadow-sm">
+          <span>🗺️ Red-Zone Map</span>
+        </a>
+
+        <!-- Emergency hotline badge -->
+        <a href="tel:999"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 hover:text-red-300 text-xs font-bold transition-all duration-200 shadow-sm">
+          <span>📞 999 Emergency</span>
+        </a>
+      </div>
+
+      <!-- Admin Mode Navbar Actions (Active on '/admin') -->
+      <div id="admin-nav-actions" class="hidden items-center gap-2 sm:gap-3">
+        <!-- Clean badge: 🛡️ Admin Command Center -->
+        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-blue-950/70 border border-cyan-500/40 text-cyan-300 text-xs font-bold shadow-sm">
+          <span class="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+          <span>🛡️ Admin Command Center</span>
+        </div>
+
+        <!-- ← Public User Site link -->
+        <a href="/"
+          class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-[#081226] hover:bg-[#0d1d3a] text-slate-300 hover:text-white border border-cyan-500/30 hover:border-cyan-400 text-xs font-semibold transition-all duration-200 shadow-sm">
+          <span>← Public User Site</span>
+        </a>
       </div>
 
     </div>
@@ -725,9 +748,9 @@
         onkeydown="if(event.key==='Enter') submitAdminPw()" />
       <p id="admin-error" class="text-xs text-red-400 hidden font-semibold">Incorrect password. Try again.</p>
       <div class="flex gap-3">
-        <button onclick="closeAdminModal()"
+        <button onclick="cancelAdminLogin()"
           class="flex-1 px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-sm font-semibold hover:bg-slate-700 transition">
-          Cancel
+          Return to Site
         </button>
         <button onclick="submitAdminPw()"
           class="flex-1 px-4 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 text-white text-sm font-bold hover:brightness-110 transition shadow-lg shadow-cyan-500/20">
@@ -913,65 +936,138 @@
       );
     }
 
-    // ──────────────── View Switching ────────────────
-    function switchView(view) {
-      currentView = view;
+    // ──────────────── Route Detection & Admin Auth ────────────────
+    function checkCurrentRoute() {
+      const path = (window.location.pathname || '/').replace(/\/+$/, '') || '/';
+      return path === '/admin' ? 'admin' : 'user';
+    }
+
+    function initRoute() {
+      const route = checkCurrentRoute();
+      currentView = route;
+
       const userView = document.getElementById('user-view');
       const adminView = document.getElementById('admin-view');
-      const btnUser = document.getElementById('btn-user-tab');
-      const btnAdmin = document.getElementById('btn-admin-tab');
+      const userNav = document.getElementById('user-nav-actions');
+      const adminNav = document.getElementById('admin-nav-actions');
+      const modal = document.getElementById('admin-modal');
 
-      if (view === 'user') {
-        userView.classList.remove('hidden');
-        adminView.classList.add('hidden');
-        document.body.classList.remove('overflow-hidden');
-        btnUser.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm shadow-cyan-500/20';
-        btnAdmin.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 text-slate-400 hover:text-slate-200';
-      } else {
-        userView.classList.add('hidden');
-        adminView.classList.remove('hidden');
+      if (route === 'admin') {
+        // --- ADMIN ROUTE (/admin) ---
+        // 1. Completely hide User Mode sections & show only Admin Panel
+        if (userView) userView.classList.add('hidden');
+        if (adminView) adminView.classList.remove('hidden');
         document.body.classList.add('overflow-hidden');
-        btnAdmin.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 bg-blue-600/30 text-cyan-300 border border-cyan-400/50 shadow-sm shadow-cyan-500/20';
-        btnUser.className = 'px-3.5 py-1.5 rounded-lg text-xs sm:text-sm font-semibold transition-all duration-300 text-slate-400 hover:text-slate-200';
 
-        // Initialize map lazily on first admin visit
+        // 2. Navbar: show Admin Command Center badge and link to Public User Site
+        if (userNav) {
+          userNav.classList.add('hidden');
+          userNav.classList.remove('flex');
+        }
+        if (adminNav) {
+          adminNav.classList.remove('hidden');
+          adminNav.classList.add('flex');
+        }
+
+        // 3. Check sessionStorage authentication
+        const isAuth = sessionStorage.getItem('shurokkha_admin_auth') === 'true';
+        if (isAuth) {
+          adminUnlocked = true;
+          if (modal) {
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+          }
+          if (!mapReady) {
+            setTimeout(initMap, 100);
+          } else if (map) {
+            setTimeout(() => map.invalidateSize(), 100);
+          }
+        } else {
+          // Trigger the Admin Password authentication modal (admin123)
+          triggerAdminModal();
+        }
+
+      } else {
+        // --- USER ROUTE (/) ---
+        // 1. Completely hide Admin Panel and modal so regular users never see or access admin controls
+        if (adminView) adminView.classList.add('hidden');
+        if (modal) {
+          modal.classList.add('hidden');
+          modal.classList.remove('flex');
+        }
+        document.body.classList.remove('overflow-hidden');
+
+        // 2. Show only User Mode landing & SOS sections
+        if (userView) userView.classList.remove('hidden');
+
+        // 3. Navbar: show User Mode actions (Live GPS status, Red-Zone Map, 999 Hotline)
+        if (adminNav) {
+          adminNav.classList.add('hidden');
+          adminNav.classList.remove('flex');
+        }
+        if (userNav) {
+          userNav.classList.remove('hidden');
+          userNav.classList.add('flex');
+        }
+      }
+    }
+
+    function triggerAdminModal() {
+      const modal = document.getElementById('admin-modal');
+      if (modal) {
+        modal.classList.remove('hidden');
+        modal.classList.add('flex');
+        const pwInput = document.getElementById('admin-pw');
+        const errEl = document.getElementById('admin-error');
+        if (pwInput) pwInput.value = '';
+        if (errEl) errEl.classList.add('hidden');
+        setTimeout(() => { if (pwInput) pwInput.focus(); }, 100);
+      }
+    }
+
+    function closeAdminModal() {
+      const modal = document.getElementById('admin-modal');
+      if (modal) {
+        modal.classList.add('hidden');
+        modal.classList.remove('flex');
+      }
+    }
+
+    function cancelAdminLogin() {
+      closeAdminModal();
+      // If user cancels admin login on /admin, return them to the public user site
+      window.location.href = '/';
+    }
+
+    function submitAdminPw() {
+      const pwInput = document.getElementById('admin-pw');
+      const errEl = document.getElementById('admin-error');
+      const pw = pwInput ? pwInput.value : '';
+
+      if (pw === 'admin123') {
+        adminUnlocked = true;
+        sessionStorage.setItem('shurokkha_admin_auth', 'true');
+        closeAdminModal();
         if (!mapReady) {
           setTimeout(initMap, 100);
         } else if (map) {
           setTimeout(() => map.invalidateSize(), 100);
         }
-      }
-    }
-
-    function requestAdminAccess() {
-      if (adminUnlocked) {
-        switchView('admin');
-        return;
-      }
-      const modal = document.getElementById('admin-modal');
-      modal.classList.remove('hidden');
-      modal.classList.add('flex');
-      document.getElementById('admin-pw').value = '';
-      document.getElementById('admin-error').classList.add('hidden');
-      setTimeout(() => document.getElementById('admin-pw').focus(), 100);
-    }
-
-    function closeAdminModal() {
-      const modal = document.getElementById('admin-modal');
-      modal.classList.add('hidden');
-      modal.classList.remove('flex');
-    }
-
-    function submitAdminPw() {
-      const pw = document.getElementById('admin-pw').value;
-      if (pw === 'admin123') {
-        adminUnlocked = true;
-        closeAdminModal();
-        switchView('admin');
       } else {
-        document.getElementById('admin-error').classList.remove('hidden');
-        document.getElementById('admin-pw').value = '';
-        document.getElementById('admin-pw').focus();
+        if (errEl) errEl.classList.remove('hidden');
+        if (pwInput) {
+          pwInput.value = '';
+          pwInput.focus();
+        }
+      }
+    }
+
+    // Retain switchView for backwards compatibility
+    function switchView(view) {
+      if (view === 'admin') {
+        window.location.href = '/admin';
+      } else {
+        window.location.href = '/';
       }
     }
 
@@ -1816,8 +1912,8 @@
       updateAdminDashboard(data);
     });
 
-    // ──────────────── Init ────────────────
-    switchView('user');
+    // ──────────────── Init Route ────────────────
+    initRoute();
   </script>
 
 </body>
