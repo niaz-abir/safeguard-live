@@ -356,10 +356,12 @@
     let knownAlertIds = new Set();
     let lastData = null;
 
-    // Current coordinates
+    // Current coordinates & Jitter Filter State
     let currentLat = null;
     let currentLng = null;
     let currentSpeed = 0;
+    let lastEmittedLat = null;
+    let lastEmittedLng = null;
 
     // Simulator State
     let isSimulating = false;
@@ -577,6 +579,8 @@
       }
 
       isSOS = true;
+      lastEmittedLat = null;
+      lastEmittedLng = null;
       updateSOSButton();
       updateStatusBanner('tracking');
       startHeartbeat();
@@ -592,9 +596,30 @@
           // If simulator is active, let simulator drive coordinates
           if (isSimulating) return;
 
-          const { latitude: lat, longitude: lng, speed } = pos.coords;
+          const { latitude: lat, longitude: lng, accuracy, speed } = pos.coords;
+
+          // 1. Client-Side Accuracy Filter: Discard reading if accuracy > 35m (prevents indoor jumps)
+          if (typeof accuracy === 'number' && accuracy > 35) {
+            console.warn(`[GPS Jitter Filter] Weak accuracy (${accuracy.toFixed(1)}m > 35m). Discarding.`);
+            return;
+          }
+
+          // 2. Client-Side Movement Filter: Ignore movement < 4 meters from last emitted point
+          if (lastEmittedLat !== null && lastEmittedLng !== null) {
+            const distFromLast = getDistanceMeters(lastEmittedLat, lastEmittedLng, lat, lng);
+            if (distFromLast < 4.0) {
+              currentSpeed = 0;
+              document.getElementById('coords-display').textContent = `📍 ${lat.toFixed(6)}, ${lng.toFixed(6)} | Stationary (0.0 km/h)`;
+              return; // Do NOT emit to prevent stationary jitter accumulation
+            }
+          }
+
+          // Point moved >= 4m or first fix
+          lastEmittedLat = lat;
+          lastEmittedLng = lng;
           currentLat = lat;
           currentLng = lng;
+
           const speedKmh = (speed !== null && speed !== undefined && speed > 0)
             ? parseFloat((speed * 3.6).toFixed(1))
             : 0;
@@ -637,6 +662,8 @@
       currentLat = null;
       currentLng = null;
       currentSpeed = 0;
+      lastEmittedLat = null;
+      lastEmittedLng = null;
     }
 
     function updateSOSButton() {
@@ -715,6 +742,8 @@
 
       currentLat = simLat;
       currentLng = simLng;
+      lastEmittedLat = simLat;
+      lastEmittedLng = simLng;
       simSteps = 0;
       simTotalDist = 0;
       simLastTime = Date.now();
@@ -747,6 +776,8 @@
         simLng = parseFloat((simLng + 0.00025).toFixed(6));
         currentLat = simLat;
         currentLng = simLng;
+        lastEmittedLat = simLat;
+        lastEmittedLng = simLng;
 
         const stepDist = getDistanceMeters(prevLat, prevLng, simLat, simLng);
         simTotalDist += stepDist;

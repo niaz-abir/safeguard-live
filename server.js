@@ -12,6 +12,17 @@ const io = new Server(server, {
 // Serve static files from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Bangladesh Standard Time (Asia/Dhaka) helper
+function getBDTime() {
+  return new Date().toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Dhaka',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  });
+}
+
 // Haversine formula to calculate distance between two coordinates in meters strictly parsing numbers
 function getDistanceMeters(lat1, lon1, lat2, lon2) {
   const pLat1 = parseFloat(lat1);
@@ -49,6 +60,7 @@ io.on('connection', (socket) => {
     if (isNaN(lat) || isNaN(lng)) return;
 
     const now = Date.now();
+    const bdTime = getBDTime();
 
     if (!activeEmergencies[socket.id]) {
       // First update for this socket.id
@@ -60,21 +72,22 @@ io.on('connection', (socket) => {
         lat,
         lng,
         speed: 0,
-        timestamp: new Date().toLocaleTimeString(),
+        timestamp: bdTime,
         startLocation: {
           lat,
           lng,
-          time: new Date().toLocaleTimeString()
+          time: bdTime
         },
         pathHistory: [
           [lat, lng]
         ],
         distanceTraveled: 0,
         lastUpdateTime: now,
+        stationaryTicks: 0,
         isNew: true
       };
 
-      console.log(`[SOS-NEW] ${activeEmergencies[socket.id].name} started SOS @ (${lat}, ${lng})`);
+      console.log(`[SOS-NEW] ${activeEmergencies[socket.id].name} started SOS @ (${lat}, ${lng}) at ${bdTime} (BST)`);
     } else {
       // Subsequent location updates for existing SOS
       const user = activeEmergencies[socket.id];
@@ -89,24 +102,39 @@ io.on('connection', (socket) => {
       const segmentDist = getDistanceMeters(prevLat, prevLng, lat, lng);
       const timeDiffSec = Math.max(1, (now - (user.lastUpdateTime || now)) / 1000);
 
-      // Lower movement threshold to 0.5 meters
-      if (segmentDist >= 0.5) {
+      // Strict minimum movement threshold: 4.0 meters (filters out indoor GPS jitter & drifting)
+      if (segmentDist >= 4.0) {
         user.distanceTraveled = (user.distanceTraveled || 0) + segmentDist;
         const calculatedSpeedKmh = (segmentDist / timeDiffSec) * 3.6;
+
+        // Realistic speed cap to filter out GPS teleportation glitches (> 140 km/h)
+        const validSpeed = calculatedSpeedKmh <= 140 ? calculatedSpeedKmh : 0;
+
         user.speed = data.speed && parseFloat(data.speed) > 0
           ? parseFloat(data.speed)
-          : parseFloat(calculatedSpeedKmh.toFixed(1));
+          : parseFloat(validSpeed.toFixed(1));
+
         user.pathHistory.push([lat, lng]);
         user.lastUpdateTime = now;
+        user.stationaryTicks = 0;
+      } else {
+        // Stationary / jitter < 4.0m: do NOT push to pathHistory, do NOT add distance, force speed to 0
+        user.stationaryTicks = (user.stationaryTicks || 0) + 1;
+        user.speed = 0;
       }
 
-      // Always update live coordinates and timestamp
+      // If user has been stationary or without movement updates for over 5 seconds, ensure speed = 0
+      if (now - (user.lastUpdateTime || now) > 5000) {
+        user.speed = 0;
+      }
+
+      // Always update live coordinates and timestamp in Bangladesh Standard Time
       user.lat = lat;
       user.lng = lng;
-      user.timestamp = new Date().toLocaleTimeString();
+      user.timestamp = bdTime;
       user.isNew = false;
 
-      console.log(`[SOS-UPDATE] ${user.name} @ (${lat}, ${lng}) | Points: ${user.pathHistory.length} | Dist: ${Math.round(user.distanceTraveled)}m | Speed: ${user.speed} km/h`);
+      console.log(`[SOS-UPDATE] ${user.name} @ (${lat}, ${lng}) | Points: ${user.pathHistory.length} | Dist: ${Math.round(user.distanceTraveled)}m | Speed: ${user.speed} km/h | Time: ${bdTime}`);
     }
 
     // Immediately broadcast updated emergencies to ALL connected clients
